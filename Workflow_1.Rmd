@@ -1,0 +1,130 @@
+---
+title: "Script 3"
+author: "Solon Ioannou"
+date: "11/21/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(pROC)
+library(knitr)
+library(kableExtra)
+```
+
+```{r}
+data <- readRDS("Data/FinalData.Rds")
+names(data)
+```
+
+
+```{r}
+set.seed(1)
+# Randomly permute the data before subsetting
+mydat_idx <- sample(1:nrow(data), replace = FALSE)
+mydat <- data[mydat_idx, ]
+
+sample_rows <- sample(nrow(mydat), nrow(mydat)*0.70)
+
+trainset <- mydat[sample_rows, ]
+testset <- mydat[-sample_rows,]
+```
+
+
+```{r}
+set.seed(1)
+traincontrols <- trainControl(method = "repeatedcv", number = 10, repeats = 5, classProbs = TRUE, summaryFunction = twoClassSummary, search = "random", allowParallel = TRUE)
+
+set.seed(1)
+lr <- train(outcome ~ . - StudySubjectID , data = trainset , trControl = traincontrols, method = "glmStepAIC", direction = "forward", metric = "ROC" )
+
+set.seed(1)
+gbm <- train(outcome ~ . - StudySubjectID, data = trainset , 
+                    method = "gbm", trControl = traincontrols, metric = "ROC", tuneLength = 30, verbose = FALSE)
+
+set.seed(1)
+rf <-  train(outcome ~ . - StudySubjectID, data = trainset , method = 'rf', trControl = traincontrols, metric = "ROC"
+                         , tuneLength = 30)
+
+set.seed(1)
+cart <-  train(outcome ~ . - StudySubjectID, data = trainset , method = 'rpart', trControl = traincontrols, metric = "ROC"
+                         , tuneLength = 30)
+```
+
+```{r}
+val_res <- list(gbm, rf, cart, lr)
+cv <- resamples(val_res, modelNames = c(gbm = "GBM", rf = "RF", cart = "CART", lr = "LR"))
+summary(cv)
+
+
+```
+
+### Box-whisker plots
+
+```{r}
+# Creating box and whisker plots
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(cv   , scales = scales)
+```
+
+### Dotplots
+
+```{r}
+# Creating dot plots
+dotplot(cv   , scales = scales)
+```
+
+# Predictions
+
+```{r}
+valpred <- lapply(val_res, function(x) predict(x, testset))
+```
+
+## Classification matrices
+
+```{r}
+valclassmat <- lapply(valpred, function(x) confusionMatrix(x, testset$outcome, mode = "everything", positive = "IBDpositive"))
+```
+
+# Probabilities
+
+```{r}
+valprob <- lapply(val_res, function(x) predict(x, testset, type = 'prob')[, "IBDpositive"])
+
+#Not used anymore since I extract only the probabilities for the positive class from the predict call
+#Extract from each element of the list the vector with the predicted Yes probabilities
+#valpr      <- lapply(valprob, '[[', "Yes")
+
+#Estimate roc
+valroc <- lapply(valprob, function(x) roc(predictor = x, response = testset$outcome))
+```
+
+```{r}
+valroc
+```
+
+```{r}
+val_auc_est <- lapply(valroc, function(x) auc(x))
+val_auc_est
+```
+
+```{r}
+valresults_tuned2 <- data.frame(
+  Algorithm = c( rep("GBM", 2 ), rep("RF", 2 ), rep("CART", 2 )),
+  Reference = do.call("rbind", lapply(valclassmat, '[[', 2)), 
+  Accuracy = rep( do.call("rbind", lapply(valclassmat, '[[', c(3, 1))), each = 2), 
+  Kappa = rep( do.call("rbind", lapply(valclassmat, '[[', c(3, 2))), each = 2),
+  Sensitivity = rep( do.call("rbind", lapply(valclassmat, '[[', c(4, 1))), each = 2),
+  Specificity = rep( do.call("rbind", lapply(valclassmat, '[[', c(4, 2))), each = 2),
+  F1Score = rep( do.call("rbind", lapply(valclassmat, '[[', c(4, 7))), each = 2),
+  AUROC = rep(do.call("rbind", lapply(val_auc_est, '[[', 1)), each = 2)
+)
+```
+
+```{r}
+kable(valresults_tuned2, caption = "Results of prediction models", digits = 2, align = "c") %>%
+kable_styling(full_width = F) %>%
+column_spec(1, bold = T) %>%
+collapse_rows(columns = 1:10, valign = "middle")
+```
